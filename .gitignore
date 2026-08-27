@@ -1,0 +1,14 @@
+# PhpStorm
+/.idea
+
+# Cache
+/cache
+
+# Composer
+/vendor
+
+# DocBook XSL Stylesheets
+phing/bin/dbxsl
+
+# NPM
+/node_modules

@@ -1,0 +1,1127 @@
+<?xml version="1.0"?>
+<!--
+  ~ @package   buildfiles
+  ~ @copyright Copyright (c)2010-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
+  ~ @license   GNU General Public License version 3, or later
+  -->
+<project name="common"
+		 basedir="."
+		 description="Common phing tasks for building Joomla! extensions"
+         default="git">
+    <!--
+    You need to import this file in your main Phing file like this:
+
+    <import file="${phing.dir}/../../buildfiles/phing/common.xml" />
+    -->
+
+    <!-- Built-in properties -->
+    <!-- ### Project Paths -->
+	<resolvepath propertyName="dirs.root" file="${phing.dir}" />
+	<resolvepath propertyName="dirs.build" file="${dirs.root}/build" />
+
+	<property name="dirs.release" value="${dirs.root}/release" />
+	<property name="dirs.templates" value="${dirs.build}/templates" />
+	<property name="dirs.documentation" value="${dirs.root}/documentation" />
+	<property name="dirs.composer" value="${dirs.root}" />
+
+    <!-- ### Software and Documentation Paths -->
+    <property name="dirs.component" value="${dirs.root}/component" />
+    <property name="dirs.modules" value="${dirs.root}/modules" />
+    <property name="dirs.plugins" value="${dirs.root}/plugins" />
+    <property name="dirs.files" value="${dirs.root}/files" />
+
+    <!-- ### DocBook XML Stylesheet Paths -->
+    <property name="dirs.bin.dbxsl" value="${phing.dir.common}/bin/dbxsl" />
+	<!-- Initialize the site parameter for relink -->
+	<property name="site" value="${build.relink_site}" />
+	<property name="sitewp" value="${build.relink_sitewp}" />
+
+	<!-- ### Release management -->
+	<!-- Security context: ``, `none`, `low`, `medium`, `high`, `critical` -->
+	<property name="security" value="" />
+
+    <!-- Load externally defined properties -->
+	<!-- ### Overrideable parameters -->
+	<property name="build.package_base_name" value="${build.component}" />
+    <!-- ### Default properties -->
+    <property file="${phing.dir.common}/default.properties" />
+    <!-- ### Common properties, above the working copy's root -->
+    <property file="${dirs.root}/../build.properties" override="true" />
+	<property file="${dirs.root}/../build.${host.os}.properties" override="true" />
+    <!-- ### Project properties and property overrides -->
+    <property file="${dirs.build}/build.properties" override="true" />
+	<property file="${dirs.build}/build.${host.os}.properties" override="true" />
+    <property file="${dirs.build}/override.properties" override="true" />
+    <property file="${dirs.build}/override.${host.os}.properties" override="true" />
+
+    <!-- Custom task definitions -->
+    <includepath classpath="${phing.dir.common}" />
+
+	<taskdef name="xmlversion" classname="tasks\XmlVersionTask"/>
+	<taskdef name="xmlupdate" classname="tasks\XmlUpdateTask"/>
+	<taskdef name="wordpressentrypoint" classname="tasks\WordPressEntryPointTask"/>
+	<taskdef name="GitHubAsset" classname="tasks\GitHubAssetTask" />
+	<taskdef name="GitHubRelease" classname="tasks\GitHubReleaseTask" />
+	<taskdef name="autoversion" classname="tasks\AutoVersionTask" />
+	<taskdef name="bladeawf" classname="tasks\BladeAwfTask" />
+	<taskdef name="curlsftp" classname="tasks\CurlSftpTask" />
+	<taskdef name="docbook2epub" classname="tasks\DocBookToEpubTask" />
+	<taskdef name="gitdate" classname="tasks\GitDateTask" />
+	<taskdef name="gitversion" classname="tasks\GitVersionTask" />
+	<taskdef name="jpa" classname="tasks\JPATask" />
+	<taskdef name="link" classname="tasks\LinkTask" />
+	<taskdef name="phpstormsources" classname="tasks\PhpStormSources" />
+	<taskdef name="projectlink" classname="tasks\ProjectLinkTask" />
+	<taskdef name="relinksite" classname="tasks\RelinkSiteTask" />
+	<taskdef name="relinkwp" classname="tasks\RelinkWPSiteTask" />
+	<taskdef name="zipme" classname="tasks\ZipmeTask" />
+
+	<!--
+	Generate the installation packages and the documentation
+	-->
+	<target name="all" description="Makes everything"
+			depends="git,documentation">
+	</target>
+
+	<!--
+	Generate the installation packages. By default it generates a development build. You can pass a specific version
+	number to make a numbered version release, e.g. `phing git -Dversion=1.2.3` to build version 1.2.3
+	-->
+	<target name="git" description="Makes only packages, not the documentation"
+			depends="new-release,setup-properties,component-packages">
+	</target>
+
+    <!--
+    Set up the basic version and build properties required to build files
+    -->
+    <target name="setup-properties" description="Set up version and build properties">
+        <!-- Initialize the build.date timestamp -->
+        <tstamp>
+            <format property="build.date" pattern="yyyy-MM-dd" />
+        </tstamp>
+
+        <!-- Initialize the version if it's not set -->
+        <if>
+            <equals arg1="${version}" arg2="git" />
+            <then>
+				<autoversion workingCopy="${dirs.root}" propertyName="version" />
+            </then>
+        </if>
+
+		<if>
+			<not>
+				<isset property="min_joomla" />
+			</not>
+			<then>
+				<property name="min_joomla" value="0.0.0" />
+			</then>
+		</if>
+
+		<if>
+			<not>
+				<isset property="max_joomla" />
+			</not>
+			<then>
+				<property name="max_joomla" value="999.999.999" />
+			</then>
+		</if>
+
+		<if>
+			<not>
+				<isset property="min_wordpress" />
+			</not>
+			<then>
+				<property name="min_wordpress" value="0.0.0" />
+			</then>
+		</if>
+
+		<if>
+			<not>
+				<isset property="max_wordpress" />
+			</not>
+			<then>
+				<property name="max_wordpress" value="999.999.999" />
+			</then>
+		</if>
+    </target>
+
+    <!--
+    Creates the release directory afresh before building anything
+
+    This task depends on link and composer-install to make sure that you have a sane environment before you start
+    building a package.
+    -->
+    <target name="new-release" description="Create a new release directory"
+			depends="composer-install,link">
+        <delete dir="${dirs.release}" quiet="true" includeemptydirs="true" />
+        <mkdir dir="${dirs.release}" />
+    </target>
+
+	<!--
+	Build the documentation.
+
+	Override with the actual build calls, e.g.
+
+	<phingcall target="docbook-epub">
+		<property name="docs.input" value="subdirectory_under_documentation/user-guide.xml"/>
+	</phingcall>
+	-->
+	<target name="documentation">
+		<echo message="Documentation build is not set up for this repository." />
+	</target>
+
+	<!--
+	Deploy the documentation to a Joomla! site which uses Akeeba DocImport.
+
+	Override with the actual deployment call, e.g.
+
+	<phingcall target="docbook-deploy">
+		<property name="docsdeploy.path.source" value="subdirectory_under_documentation"/>
+		<property name="docsdeploy.path.target" value="my-docs"/>
+	</phingcall>
+	-->
+	<target name="docsdeploy">
+		<echo message="Documentation deployment is not set up for this repository." />
+	</target>
+
+    <!--
+    Installs Composer dependencies.
+
+    It's highly recommended that you commit your composer.lock in the repository. It makes sure that all build machines
+    install the same version of the dependencies as your development machine.
+
+    By default we look for composer.json in the repository root. If you have it elsewhere please update the
+    dirs.composer property in your build.properties or build.xml file.
+    -->
+    <target name="composer-install">
+		<echo>Composer dependencies need to be manually installed when using Akeeba Build Tools — Public Packager</echo>
+	</target>
+
+    <!--
+    Transforms a DocBook XML file to ePub format
+
+    docs.input      DocBook XML filename relative to dirs.documentation
+    -->
+    <target name="docbook-epub" description="Render documentation in ePub format">
+        <basename property="docs.output" file="${docs.input}" suffix=".xml" />
+        <dirname property="docs.images" file="${dirs.documentation}/${docs.input}" />
+
+        <property name="docs.epubdir" value="${dirs.release}/tmp_${docs.output}" />
+
+        <mkdir dir="${docs.epubdir}" />
+        <mkdir dir="${docs.epubdir}/OEBPS" />
+        <mkdir dir="${docs.epubdir}/META-INF" />
+        <mkdir dir="${docs.epubdir}/OEBPS/images" />
+        <copy todir="${docs.epubdir}/OEBPS/images" haltonerror="false">
+            <fileset dir="${docs.images}/images">
+                <include name="*.png" />
+                <include name="*.jpg" />
+                <include name="*.jpeg" />
+                <include name="*.gif" />
+            </fileset>
+        </copy>
+
+		<if>
+			<equals arg1="${docs.php_xsltproc}" arg2="1"/>
+			<then>
+				<!-- Use the xsltproc included in your current PHP installation -->
+				<docbook2epub xsltRoot="${dirs.bin.dbxsl}"
+							  docBookFile="${dirs.documentation}/${docs.input}"
+							  epubPath="${docs.epubdir}"
+				/>
+			</then>
+			<else>
+				<exec executable="${docs.xsltproc}" dir="${dirs.documentation}" checkreturn="true">
+					<arg value="--nonet" />
+					<arg value="--xinclude" />
+					<arg value="--novalid" />
+
+					<arg value="--stringparam" />
+					<arg value="epub.stylesheet" />
+					<arg value="style.css" />
+
+					<arg value="--stringparam" />
+					<arg value="body.start.indent" />
+					<arg value="0" />
+
+					<arg value="--stringparam" />
+					<arg value="variablelist.term.break.after" />
+					<arg value="1" />
+
+					<arg value="--stringparam" />
+					<arg value="variablelist.term.separator" />
+					<arg value="&quot;&quot;" />
+
+					<arg value="--stringparam" />
+					<arg value="variablelist.max.termlength" />
+					<arg value="12" />
+
+					<arg value="--stringparam" />
+					<arg value="admon.graphics" />
+					<arg value="0" />
+
+					<arg value="--stringparam" />
+					<arg value="use.id.as.filename" />
+					<arg value="1" />
+
+					<arg value="--stringparam" />
+					<arg value="chunk.section.depth" />
+					<arg value="3" />
+
+					<arg value="--stringparam" />
+					<arg value="section.autolabel" />
+					<arg value="1" />
+
+					<arg value="--stringparam" />
+					<arg value="toc.section.depth" />
+					<arg value="5" />
+
+					<arg value="--stringparam" />
+					<arg value="highlight.source" />
+					<arg value="1" />
+
+					<arg value="--stringparam" />
+					<arg value="paper.type" />
+					<arg value="A4" />
+
+					<arg value="--output" />
+					<arg file="${docs.epubdir}/${docs.output}.epub" />
+
+					<arg file="${dirs.bin.dbxsl}/epub3/chunk.xsl" />
+
+					<arg file="${dirs.documentation}/${docs.input}" />
+				</exec>
+			</else>
+		</if>
+
+        <copy file="${phing.dir.common}/epub/mimetype" tofile="${docs.epubdir}/mimetype" overwrite="true" />
+        <copy file="${phing.dir.common}/epub/com.apple.ibooks.display-options.xml" tofile="${docs.epubdir}/META-INF/com.apple.ibooks.display-options.xml" overwrite="true" />
+        <copy file="${phing.dir.common}/epub/docbook-epub.css" tofile="${docs.epubdir}/OEBPS/docbook-epub.css" overwrite="true" />
+
+        <zip destfile="${dirs.release}/${docs.output}.epub" basedir="${docs.epubdir}">
+            <fileset dir="${docs.epubdir}">
+                <include name="**" />
+            </fileset>
+        </zip>
+
+        <delete dir="${docs.epubdir}" quiet="true" />
+    </target>
+
+	<target name="docbook-zip" description="Render documentation in a ZIP file format">
+		<!-- Output file -->
+		<basename property="docs.output" file="${docs.input}" suffix=".xml" />
+		<!-- Images parent folder (images are stored in its /images subdirectory) -->
+		<dirname property="docs.images" file="${dirs.documentation}/${docs.input}" />
+		<!-- The working directory (temporary) -->
+		<property name="docs.workdir" value="${dirs.release}/tmp" />
+
+		<!-- Rebuild the working directory -->
+		<delete dir="${docs.workdir}" quiet="true" />
+		<mkdir dir="${docs.workdir}" />
+		<mkdir dir="${docs.workdir}/images" />
+
+		<!-- Copy image files -->
+		<copy todir="${docs.workdir}/images" haltonerror="false">
+			<fileset dir="${docs.images}/images">
+				<include name="*.png" />
+				<include name="*.jpg" />
+				<include name="*.jpeg" />
+				<include name="*.gif" />
+			</fileset>
+		</copy>
+
+		<exec executable="${docs.xsltproc}" dir="${dirs.documentation}" checkreturn="true">
+			<arg value="--nonet" />
+			<arg value="--xinclude" />
+			<arg value="--novalid" />
+
+			<arg value="--stringparam" />
+			<arg value="body.start.indent" />
+			<arg value="0" />
+
+			<arg value="--stringparam" />
+			<arg value="variablelist.term.break.after" />
+			<arg value="1" />
+
+			<arg value="--stringparam" />
+			<arg value="variablelist.term.separator" />
+			<arg value="&quot;&quot;" />
+
+			<arg value="--stringparam" />
+			<arg value="variablelist.max.termlength" />
+			<arg value="12" />
+
+			<arg value="--stringparam" />
+			<arg value="admon.graphics" />
+			<arg value="0" />
+
+			<arg value="--stringparam" />
+			<arg value="use.id.as.filename" />
+			<arg value="1" />
+
+			<arg value="--stringparam" />
+			<arg value="chunk.section.depth" />
+			<arg value="3" />
+
+			<arg value="--stringparam" />
+			<arg value="section.autolabel" />
+			<arg value="1" />
+
+			<arg value="--stringparam" />
+			<arg value="toc.section.depth" />
+			<arg value="5" />
+
+			<arg value="--stringparam" />
+			<arg value="highlight.source" />
+			<arg value="1" />
+
+			<arg value="--output" />
+			<arg value="${docs.workdir}/" />
+
+			<arg file="${dirs.bin.dbxsl}/html/chunk.xsl" />
+
+			<arg file="${dirs.documentation}/${docs.input}" />
+		</exec>
+
+		<zip destfile="${dirs.release}/${docs.output}-import.zip" basedir="${docs.workdir}">
+			<fileset dir="${docs.workdir}">
+				<include name="**" />
+			</fileset>
+		</zip>
+
+		<delete dir="${docs.workdir}" quiet="true" />
+	</target>
+
+	<!--
+    Copy DocBook XML documentation to the remote server, for use by Akeeba DocImport³
+
+    scp.dir.docs            Absolute SFTP path where documentation files are stored
+    docsdeploy.path.source  Path to the documentation source, relative to ${dirs.documentation}
+    docsdeploy.path.target  SFTP path to uploaded documentation, relative to ${scp.dir.docs}
+    -->
+    <target name="docbook-deploy" >
+		<echo>Deployment targets are deactivated in Akeeba Build Tools — Public Packager</echo>
+    </target>
+
+	<!--
+    Uses Akeeba Release maker to deploy new releases to a remote Akeeba Release System installation.
+
+	security					Security context: ``, `none`, `low`, `medium`, `high`, `critical`
+
+    release.method				json, yaml or github
+
+    release.source              Absolute path and filename to the release.json prototype we're going to use
+    release.api.endpoint        URL to the ARS API endpoint
+    release.api.username        Username for the ARS API
+    release.api.password        Password for the ARS API
+    release.api.token           Joomla! API Token for the ARS API
+    release.cacert				Absolute path to a custom cacert.pem file
+
+    release.core.method              How should I release the CORE version? s3, sftp, ftp, ftps
+    release.core.dir                 SFTP directory for the CORE release, relative to ${scp.dir} or ${s3.directory}
+    release.core.pattern             Pattern for CORE files
+    release.core.update_basename     Update filename, without extension, for the CORE release
+    release.core.update_stream       ARS update stream ID for the CORE release
+    release.core.access_level        Viewing access level for the CORE release
+
+    release.pro.method              How should I release the PRO version? s3, sftp, ftp, ftps
+    release.pro.dir                 SFTP directory for the PRO release, relative to ${scp.dir} or ${s3.directory}
+    release.pro.pattern             Pattern for PRO files
+    release.pro.update_basename     Update filename, without extension, for the PRO release
+    release.pro.update_stream       ARS update stream ID for the PRO release
+    release.pro.access_level        Viewing access level for the PRO release
+
+    s3.access               Amazon S3 access key for deploying public uploads
+    s3.private              Amazon S3 secret key for deploying public uploads
+    s3.bucket               Amazon S3 bucket name for deploying public uploads
+    s3.directory            Amazon S3 directory for deploying public uploads
+    s3.signature            Amazon S3 signature type (v3, v4)
+    s3.region               Amazon S3 region, for v4 signature type
+
+    scp.host                    SFTP hostname
+    scp.port                    SFTP port
+    scp.username                SFTP username
+    scp.password                SFTP password
+    scp.dir                     SFTP initial directory
+    -->
+	<target name="release">
+		<echo>Deployment targets are deactivated in Akeeba Build Tools — Public Packager</echo>
+	</target>
+
+    <target name="release-legacy" depends="setup-properties" description="Use Akeeba Release Maker to deploy software">
+        <phingcall target="onBeforeRelease">
+        </phingcall>
+
+		<echo>Deployment targets are deactivated in Akeeba Build Tools — Public Packager</echo>
+
+        <phingcall target="onAfterRelease">
+        </phingcall>
+    </target>
+
+	<target name="release-yaml" depends="setup-properties" description="Use Akeeba Release Maker to deploy software">
+		<phingcall target="onBeforeRelease">
+		</phingcall>
+
+		<echo>Deployment targets are deactivated in Akeeba Build Tools — Public Packager</echo>
+
+		<phingcall target="onAfterRelease">
+		</phingcall>
+	</target>
+
+	<!--
+	Deploy a new release to GitHub's releases.
+
+	Requires a published tav with the same name as the version you are releasing.
+
+	The following properties must be set up in release.properties
+
+	github.organization		The GitHub organization where your repository is located in
+	github.repository		The name of your repository
+	github.release.file		The file to release into GitHub
+
+	Tip: Your GitHub repository's URL is https://github.com/${github.organization}/${github.repository}
+	-->
+	<target name="github-release">
+		<echo>Deployment targets are deactivated in Akeeba Build Tools — Public Packager</echo>
+	</target>
+
+	<target name="github-release-file">
+		<echo>Deployment targets are deactivated in Akeeba Build Tools — Public Packager</echo>
+	</target>
+
+	<!--
+	Only re-uploads the update stream to the server.
+
+	This is a modified release task, making sure there is no valid version or core/pro/pdf file upload pattern.
+	-->
+	<target name="update" depends="setup-properties" description="Use Akeeba Release Maker to deploy software udpates only">
+		<echo>Deployment targets are deactivated in Akeeba Build Tools — Public Packager</echo>
+	</target>
+
+	<target name="debug_release" depends="setup-properties" description="Use Akeeba Release Maker to generate the release file only; no deployment">
+		<echo>Deployment targets are deactivated in Akeeba Build Tools — Public Packager</echo>
+	</target>
+
+    <!-- Runs before "release". Put any custom actions here. You can NOT set/modify variables, see https://www.phing.info/docs/guide/trunk/PhingCallTask.html -->
+    <target name="onBeforeRelease">
+    </target>
+
+    <!-- Runs after "release". Put any custom actions here. You can NOT set/modify variables, see https://www.phing.info/docs/guide/trunk/PhingCallTask.html -->
+    <target name="onAfterRelease">
+    </target>
+
+    <!--
+    Copy the latest builds of the software to a remote server over SCP. This is normally used with BleedingEdge type
+    repositories of Akeeba Release System to provide developer preview releases.
+
+    ftpdeploy.pattern.core      Pattern for Core files, e.g. com_akeeba-*-core.zip
+    ftpdeploy.pattern.pro       Pattern for Pro files, e.g. com_akeeba-*-core.zip
+    ftpdeploy.path.core         SFTP path to Core files, relative to ${scp.dir}
+    ftpdeploy.path.pro          SFTP path to Pro files, relative to ${scp.dir}
+
+    scp.host                    SFTP hostname
+    scp.port                    SFTP port
+    scp.username                SFTP username
+    scp.password                SFTP password
+    scp.dir                     SFTP initial directory
+    -->
+    <target name="ftpdeploy" depends="git">
+		<echo>Deployment targets are deactivated in Akeeba Build Tools — Public Packager</echo>
+    </target>
+
+    <!--
+    Internal linker. Symlinks or hardlinks external files / folders into the project
+    -->
+    <target name="link" description="Internal linker">
+        <projectlink repository="${dirs.root}" />
+    </target>
+
+    <!--
+    Symlink the component, modules and plugins to a Joomla! installation
+
+    site        Absolute filesystem path to the Joomla! installation
+    -->
+    <target name="relink" description="Joomla! extension relinker">
+		<!-- Initialize the site variable if it's not set -->
+		<if>
+			<equals arg1="${site}" arg2="" />
+			<then>
+				<property name="site" value="${build.relink_site}" override="true" />
+			</then>
+		</if>
+
+        <relinksite site="${site}" repository="${dirs.root}" />
+    </target>
+
+    <!--
+    Symlink the plugin to a WordPress installation
+
+    site        Absolute filesystem path to the Joomla! installation
+    -->
+    <target name="relinkwp" description="WordPress plugin relinker">
+		<!-- Initialize the site variable if it's not set -->
+		<if>
+			<equals arg1="${sitewp}" arg2="" />
+			<then>
+				<property name="sitewp" value="${build.relink_sitewp}" override="true" />
+			</then>
+		</if>
+
+        <relinkwp site="${sitewp}" repository="${dirs.root}" />
+    </target>
+
+	<!--
+	====================================================================================================
+	Tasks - Joomla! packages
+	====================================================================================================
+	-->
+
+	<!--
+	Builds the Core and Pro installation packages for you. Called by the `git` task. If you need to include other
+	stuff –library packages, file packages, template packages, other extension packages not present in this
+	repository– you can create a task to put the necessary packages in the `release` folder and then override the
+	`component-packages` target, adding the dependencies BEFORE package-pkg. For example:
+
+	<target name="component-packages" depends="my-stuff,some-other-stuff,package-pkg" />
+
+	DO NOT OVERRIDE THE OTHER TASKS INVOLVED IN PACKAGE BUILDING. Please consult the README.md for information.
+	-->
+	<target name="component-packages" depends="xml-version,package-pkg" />
+
+	<!--
+	Modify the XML manifest files applying the build date and version
+	-->
+	<target name="xml-version" depends="setup-properties">
+
+		<if>
+			<and>
+				<not>
+					<contains string="${version}" substring="rev"/>
+				</not>
+				<not>
+					<contains string="${version}" substring="dev"/>
+				</not>
+				<not>
+					<contains string="${version}" substring="git"/>
+				</not>
+				<not>
+					<contains string="${version}" substring="svn"/>
+				</not>
+			</and>
+			<then>
+				<xmlversion repository="${dirs.root}" version="${version}" date="${build.date}"/>
+			</then>
+		</if>
+	</target>
+
+	<!--
+	Generates the component installation ZIP files for the Pro and Core releases
+	-->
+	<target name="package-com" description="Builds the component">
+		<if>
+			<available file="${dirs.component}" type="dir" />
+			<then>
+				<!-- Build the Core package -->
+				<phingcall target="package-com-builder">
+					<property name="build.is_pro" value="0" />
+				</phingcall>
+
+				<if>
+					<equals arg1="${build.has_pro}" arg2="1" />
+					<then>
+						<!-- Build the Pro package -->
+						<phingcall target="package-com-builder">
+							<property name="build.is_pro" value="1" />
+						</phingcall>
+					</then>
+				</if>
+			</then>
+		</if>
+	</target>
+
+	<!--
+	Internal builder task to build one component installation package (Core or Pro) at a time
+	-->
+	<target name="package-com-builder" description="Builds a component package archive">
+		<!-- Determine the name of the XML manifest template file, package file and the fileset reference ID -->
+		<if>
+			<not>
+				<equals arg1="${build.has_pro}" arg2="1" />
+			</not>
+			<then>
+				<!-- No Pro/Core version, do not use a suffix -->
+				<!-- XML Manifest name: something.xml -->
+				<property name="build.template_xml" value="${build.component}.xml" />
+				<!-- Package name: com_something.zip -->
+				<property name="build.package_name" value="com_${build.component}.zip" />
+				<!-- Fileset reference ID: component -->
+				<property name="build.refid" value="component" />
+			</then>
+			<else>
+				<!-- Distinct Pro / Core versions, use a suffix -->
+				<if>
+					<equals arg1="${build.is_pro}" arg2="1" />
+					<then>
+						<property name="build.suffix" value="pro" />
+					</then>
+					<else>
+						<property name="build.suffix" value="core" />
+					</else>
+				</if>
+				<!-- XML Manifest name: something_core.xml -->
+				<property name="build.template_xml" value="${build.component}_${build.suffix}.xml" />
+				<!-- Package name: com_something-core.zip -->
+				<property name="build.package_name" value="com_${build.component}-${build.suffix}.zip" />
+				<!-- Fileset reference ID: component-core -->
+				<property name="build.refid" value="component-${build.suffix}" />
+			</else>
+		</if>
+
+		<!-- Copy the XML manifest file -->
+		<if>
+			<available file="${dirs.templates}/${build.template_xml}" property="completely.ignored" />
+			<then>
+				<copy file="${dirs.templates}/${build.template_xml}" tofile="${dirs.component}/${build.component}.xml" overwrite="true">
+					<filterchain>
+						<replacetokens begintoken="##" endtoken="##">
+							<token key="DATE" value="${build.date}" />
+							<token key="VERSION" value="${version}" />
+							<token key="PRO" value="${build.is_pro}" />
+							<token key="MINJOOMLA" value="${build.min_joomla}" />
+							<token key="MAXJOOMLA" value="${build.max_joomla}" />
+							<token key="MINWP" value="${build.min_wordpress}" />
+							<token key="MAXWP" value="${build.max_wordpress}" />
+						</replacetokens>
+					</filterchain>
+				</copy>
+			</then>
+		</if>
+
+		<!-- Copy the version.php file -->
+		<if>
+			<available file="${dirs.templates}/version.php" property="completely.ignored" />
+			<then>
+				<copy file="${dirs.templates}/version.php" tofile="${dirs.component}/backend/version.php" overwrite="true">
+					<filterchain>
+						<replacetokens begintoken="##" endtoken="##">
+							<token key="DATE" value="${build.date}" />
+							<token key="VERSION" value="${version}" />
+							<token key="PRO" value="${build.is_pro}" />
+							<token key="MINJOOMLA" value="${build.min_joomla}" />
+							<token key="MAXJOOMLA" value="${build.max_joomla}" />
+							<token key="MINWP" value="${build.min_wordpress}" />
+							<token key="MAXWP" value="${build.max_wordpress}" />
+						</replacetokens>
+					</filterchain>
+				</copy>
+			</then>
+		</if>
+
+		<!-- Create the package ZIP file -->
+		<zipme basedir="${dirs.component}" destfile="${dirs.release}/${build.package_name}" includeemptydirs="true">
+			<fileset refid="${build.refid}" />
+		</zipme>
+	</target>
+
+	<!--
+	Builds all the modules found in the modules/site and modules/admin folders of your repository
+	-->
+	<target name="package-modules" description="Build all modules">
+		<if>
+			<available file="${dirs.modules}" type="dir" />
+			<then>
+				<foreach param="dirname" absparam="absname" target="package-module-folder" inheritall="true" inheritrefs="true">
+					<fileset dir="${dirs.modules}">
+						<type type="dir" />
+						<depth max="0" min="0" />
+					</fileset>
+				</foreach>
+			</then>
+		</if>
+	</target>
+
+	<!--
+	Internal builder task to process all modules inside the modules/site or modules/admin folder of your repository
+	-->
+	<target name="package-module-folder" description="Iterate over the modules in an area (site, admin) directory">
+		<property name="module_area" value="${dirname}" />
+
+		<foreach param="module_name" absparam="module_dir" target="package-module-item" inheritall="true" inheritrefs="true">
+			<fileset dir="${absname}">
+				<type type="dir" />
+				<depth max="0" min="0" />
+			</fileset>
+		</foreach>
+	</target>
+
+	<!--
+	Internal builder task to build one module installation package at a time
+	-->
+	<target name="package-module-item" description="Package a single module">
+		<echo message="Packaging module ${module_area}/${module_name}" />
+
+		<if>
+			<not>
+				<equals arg1="${build.has_pro}" arg2="1" />
+			</not>
+			<then>
+				<property name="module_refid" value="mod_${module_area}_${module_name}" />
+			</then>
+			<else>
+				<!-- Distinct Pro / Core versions, use a suffix -->
+				<if>
+					<equals arg1="${build.is_pro}" arg2="1" />
+					<then>
+						<property name="module_refid" value="mod_${module_area}_${module_name}_pro" />
+					</then>
+					<else>
+						<property name="module_refid" value="mod_${module_area}_${module_name}_core" />
+					</else>
+				</if>
+			</else>
+		</if>
+
+		<property name="module_package" value="${dirs.release}/mod_${module_name}.zip" />
+
+		<if>
+			<not>
+				<referenceexists ref="${module_refid}" />
+			</not>
+			<then>
+				<zipme basedir="${module_dir}" destfile="${module_package}" includeemptydirs="true">
+					<fileset dir="${module_dir}">
+						<include name="**" />
+					</fileset>
+				</zipme>
+			</then>
+			<else>
+				<zipme basedir="${module_dir}" destfile="${module_package}" includeemptydirs="true">
+					<fileset dir="${module_dir}">
+						<patternset refid="${module_refid}" />
+					</fileset>
+				</zipme>
+			</else>
+		</if>
+
+	</target>
+
+	<!--
+	Builds all the plugins found in the plugins/* folders of your repository
+	-->
+	<target name="package-plugins" description="Build all plugins">
+		<if>
+			<available file="${dirs.plugins}" type="dir" />
+			<then>
+				<foreach param="dirname" absparam="absname" target="package-plugin-folder" inheritall="true" inheritrefs="true">
+					<fileset dir="${dirs.plugins}">
+						<type type="dir" />
+						<depth max="0" min="0" />
+					</fileset>
+				</foreach>
+			</then>
+		</if>
+	</target>
+
+	<!--
+	Internal builder task to process all plugins inside a plugins/whatever folder of your repository, e.g. plugins/system
+	-->
+	<target name="package-plugin-folder" description="Iterate over the plugins in an area (system, user, ...) directory">
+		<property name="plugin_area" value="${dirname}" />
+
+		<foreach param="plugin_name" absparam="plugin_dir" target="package-plugin-item" inheritall="true" inheritrefs="true">
+			<fileset dir="${absname}">
+				<type type="dir" />
+				<depth max="0" min="0" />
+			</fileset>
+		</foreach>
+	</target>
+
+	<!--
+	Internal builder task to build one plugin installation package at a time
+	-->
+	<target name="package-plugin-item" description="Package a single plugin">
+		<echo message="Packaging plugin ${plugin_area}/${plugin_name}" />
+		<!-- Determine the name of the XML manifest template file, package file and the fileset reference ID -->
+		<if>
+			<not>
+				<equals arg1="${build.has_pro}" arg2="1" />
+			</not>
+			<then>
+				<property name="plugin_refid" value="plg_${plugin_area}_${plugin_name}" />
+			</then>
+			<else>
+				<!-- Distinct Pro / Core versions, use a suffix -->
+				<if>
+					<equals arg1="${build.is_pro}" arg2="1" />
+					<then>
+						<property name="plugin_refid" value="plg_${plugin_area}_${plugin_name}_pro" />
+					</then>
+					<else>
+						<property name="plugin_refid" value="plg_${plugin_area}_${plugin_name}_core" />
+					</else>
+				</if>
+			</else>
+		</if>
+
+		<property name="plugin_package" value="${dirs.release}/plg_${plugin_area}_${plugin_name}.zip" />
+
+		<if>
+			<not>
+				<referenceexists ref="${plugin_refid}" />
+			</not>
+			<then>
+				<zipme basedir="${plugin_dir}" destfile="${plugin_package}" includeemptydirs="true">
+					<fileset dir="${plugin_dir}">
+						<include name="**" />
+						<exclude name="composer.phar" />
+						<exclude name="composer.json" />
+						<exclude name="composer.lock" />
+					</fileset>
+				</zipme>
+			</then>
+			<else>
+				<zipme basedir="${plugin_dir}" destfile="${plugin_package}" includeemptydirs="true">
+					<fileset dir="${plugin_dir}">
+						<patternset refid="${plugin_refid}" />
+					</fileset>
+				</zipme>
+			</else>
+		</if>
+	</target>
+
+	<!--
+	Internal builder task to process all file packages inside the files folder of your repository
+	-->
+	<target name="package-files">
+		<if>
+			<available file="${dirs.files}" type="dir" />
+			<then>
+				<foreach param="dirname" absparam="absname" target="package-file-item" inheritall="true" inheritrefs="true">
+					<fileset dir="${dirs.files}">
+						<type type="dir"/>
+						<depth max="0" min="0" />
+					</fileset>
+				</foreach>
+			</then>
+		</if>
+	</target>
+
+	<!--
+	Internal builder task to build a file package
+	-->
+	<target name="package-file-item">
+		<echo message="Packaging file package ${dirname}" />
+
+		<if>
+			<not>
+				<equals arg1="${build.has_pro}" arg2="1" />
+			</not>
+			<then>
+				<property name="file_refid" value="file_${dirname}" />
+			</then>
+			<else>
+				<!-- Distinct Pro / Core versions, use a suffix -->
+				<if>
+					<equals arg1="${build.is_pro}" arg2="1" />
+					<then>
+						<property name="file_refid" value="file_${dirname}_pro" />
+					</then>
+					<else>
+						<property name="file_refid" value="file_${dirname}_core" />
+					</else>
+				</if>
+			</else>
+		</if>
+
+		<property name="file_package" value="${dirs.release}/file_${dirname}.zip" />
+
+		<if>
+			<not>
+				<referenceexists ref="${file_refid}" />
+			</not>
+			<then>
+				<zipme basedir="${absname}" destfile="${file_package}" includeemptydirs="true">
+					<fileset dir="${absname}">
+						<include name="**" />
+					</fileset>
+				</zipme>
+			</then>
+			<else>
+				<zipme basedir="${module_dir}" destfile="${file_package}" includeemptydirs="true">
+					<fileset dir="${absname}">
+						<patternset refid="${file_refid}" />
+					</fileset>
+				</zipme>
+			</else>
+		</if>
+	</target>
+
+	<!--
+	Builds all Core and Pro packages (pkg_something*.zip)
+	-->
+	<target name="package-pkg" description="Installation package (pkg_something)" depends="new-release, setup-properties, package-com, package-modules, package-plugins">
+
+		<trycatch property="build.package.fail" reference="build.package.fail.reference">
+			<try>
+				<!-- Build the Core package -->
+				<phingcall target="package-pkg-builder">
+					<property name="build.is_pro" value="0" />
+				</phingcall>
+
+				<if>
+					<equals arg1="${build.has_pro}" arg2="1" />
+					<then>
+						<!-- Build the Pro package -->
+						<phingcall target="package-pkg-builder">
+							<property name="build.is_pro" value="1" />
+						</phingcall>
+
+						<!-- Clean up -->
+						<delete>
+							<fileset refid="package-core" />
+							<fileset refid="package-pro" />
+						</delete>
+					</then>
+					<else>
+						<!-- Clean up -->
+						<delete>
+							<fileset refid="package" />
+						</delete>
+					</else>
+				</if>
+			</try>
+
+			<catch>
+				<if>
+					<equals arg1="${build.allow_joomla_package_fail}" arg2="0" />
+					<then>
+						<throw refid="build.package.fail.reference" />
+					</then>
+				</if>
+
+				<echo>Joomla! package extension skipped over.</echo>
+			</catch>
+		</trycatch>
+
+	</target>
+
+	<!--
+	Internal task to build one installation package (Core or Pro) at a time.
+	-->
+	<target name="package-pkg-builder" description="Create an installation package">
+
+		<!-- Determine the name of the XML manifest template file, package file and the fileset reference ID -->
+		<if>
+			<not>
+				<equals arg1="${build.has_pro}" arg2="1" />
+			</not>
+			<then>
+				<!-- No Pro/Core version, do not use a suffix -->
+				<!-- XML Manifest name: pkg_something.xml -->
+				<property name="build.template_xml" value="pkg_${build.package_base_name}.xml" />
+				<!-- Package name: pkg_something-1.2.3.zip -->
+				<property name="build.package_name" value="pkg_${build.package_base_name}-${version}.zip" />
+				<!-- Fileset reference ID: package -->
+				<property name="build.refid" value="package" />
+			</then>
+			<else>
+				<!-- Distinct Pro / Core versions, use a suffix -->
+				<if>
+					<equals arg1="${build.is_pro}" arg2="1" />
+					<then>
+						<property name="build.suffix" value="pro" />
+					</then>
+					<else>
+						<property name="build.suffix" value="core" />
+					</else>
+				</if>
+				<!-- XML Manifest name: pkg_something_core.xml -->
+				<property name="build.template_xml" value="pkg_${build.package_base_name}_${build.suffix}.xml" />
+				<!-- Package name: pkg_something-1.2.3-core.zip -->
+				<property name="build.package_name" value="pkg_${build.package_base_name}-${version}-${build.suffix}.zip" />
+				<!-- Fileset reference ID: package-core -->
+				<property name="build.refid" value="package-${build.suffix}" />
+			</else>
+		</if>
+
+		<!-- Create the XML manifest. IMPORTANT: THE TARGET NAME IS ALWAYS pkg_something.xml WITHOUT A SUFFIX TO ALLOW
+		 JOOMLA! TO UPGRADE FROM CORE TO PRO WITHOUT SCREWING UP THE #__extensions ENTRIES!!! -->
+		<copy file="${dirs.templates}/${build.template_xml}" tofile="${dirs.release}/pkg_${build.component}.xml" overwrite="true">
+			<filterchain>
+				<replacetokens begintoken="##" endtoken="##">
+					<token key="DATE" value="${build.date}" />
+					<token key="VERSION" value="${version}" />
+					<token key="MINJOOMLA" value="${build.min_joomla}" />
+					<token key="MAXJOOMLA" value="${build.max_joomla}" />
+					<token key="MINWP" value="${build.min_wordpress}" />
+					<token key="MAXWP" value="${build.max_wordpress}" />
+				</replacetokens>
+			</filterchain>
+		</copy>
+
+		<!-- Copy the package XML file to the repo root -->
+		<copy file="${dirs.release}/pkg_${build.component}.xml" tofile="${dirs.root}/pkg_${build.component}.xml" overwrite="true" />
+
+		<!-- Copy the LICENSE.txt file, if present -->
+		<if>
+			<available property="completely.ignored" file="${dirs.component}/LICENSE.txt" />
+			<then>
+				<copy file="${dirs.component}/LICENSE.txt" tofile="${dirs.release}/LICENSE.txt" overwrite="true" />
+			</then>
+		</if>
+
+		<!-- Copy the language folder, if present -->
+		<if>
+			<available property="completely.ignored" file="${dirs.templates}/language" type="dir" />
+			<then>
+				<copy todir="${dirs.release}" overwrite="true">
+					<fileset dir="${dirs.templates}">
+						<include name="language/**" />
+					</fileset>
+				</copy>
+			</then>
+		</if>
+
+		<!-- Copy the script.something.php installation script file, if present -->
+		<if>
+			<available property="completely.ignored" file="${dirs.templates}/script.${build.component}.php" />
+			<then>
+				<copy file="${dirs.templates}/script.${build.component}.php" tofile="${dirs.release}/script.${build.component}.php" overwrite="true" />
+			</then>
+		</if>
+		<if>
+			<available property="completely.ignored" file="${dirs.component}/script.${build.component}.php" />
+			<then>
+				<copy file="${dirs.component}/script.${build.component}.php" tofile="${dirs.release}/script.${build.component}.php" overwrite="true" />
+			</then>
+		</if>
+
+		<!-- Create the ZIP file -->
+		<zipme basedir="${dirs.release}" destfile="${dirs.release}/${build.package_name}" includeemptydirs="true">
+			<fileset refid="${build.refid}" />
+		</zipme>
+	</target>
+
+    <target name="info">
+        <php function="php_ini_loaded_file" returnProperty="inifiles" />
+        <php function="php_ini_scanned_files" returnProperty="extrainifiles" />
+
+        <echo message="Phing v.${phing.version} running on ${os.name}" />
+        <echo message="Host OS ${host.os} release ${host.os.release} version ${host.os.version}" />
+        <echo message="PHP version: ${php.version}" />
+        <echo message="PHP ini file: ${inifiles}" />
+        <echo message="PHP additional ini files: ${extrainifiles}" />
+        <echo message="Host architecture ${host.arch} – fstype ${host.fstype}" />
+        <echo message="Host domain ${host.domain}" />
+        <echo message="CWD ${application.startdir}" />
+        <echo message="phing.file ${phing.file}" />
+        <echo message="phing.home ${phing.home}" />
+        <echo message="phing.dir ${phing.dir}" />
+        <echo message="phing.project.name ${phing.project.name}" />
+        <echo message="project.basedir ${project.basedir}" />
+    </target>
+
+	<target name="phpstorm" description="Update PhpStorm's directory to namespace mapping">
+		<phpstormsources repository="${dirs.root}" />
+	</target>
+</project>
