@@ -91,6 +91,9 @@
 			depends="new-release,setup-properties,component-packages">
 	</target>
 
+	<!-- Inactive in Akeeba Build Tools — Public Packager -->
+	<target name="version-constraints"></target>
+
     <!--
     Set up the basic version and build properties required to build files
     -->
